@@ -1,7 +1,7 @@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { formatLeadDate, classifyGhlStageNumber } from '@/lib/leadUtils';
+import { formatLeadDate } from '@/lib/leadUtils';
 import type { ProcessedLead } from '@/lib/types';
 
 /**
@@ -21,15 +21,6 @@ const FUENTE_FULL_NAME: Record<string, string> = {
 
 function fuenteDisplayName(fuente: string): string {
   return FUENTE_FULL_NAME[fuente.toLowerCase()] ?? fuente;
-}
-
-/** Clases del badge de "Estado GHL" — SOLO por el número de la etapa de GHL, gris si no hay dato real (nunca cae al color de la Etapa de HubSpot/Sheet, para no confundir). */
-function ghlPillClassName(estadoGHL?: string): string {
-  const color = estadoGHL ? classifyGhlStageNumber(estadoGHL) : null;
-  if (color === 'Verde') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400';
-  if (color === 'Amarillo') return 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400';
-  if (color === 'Rojo') return 'border-red-500/30 bg-red-500/10 text-red-400';
-  return 'border-zinc-700 bg-transparent text-zinc-400';
 }
 
 /**
@@ -123,7 +114,6 @@ export function LeadsTable({ leads }: { leads: ProcessedLead[] }) {
             <TableHead className="text-zinc-500">FECHA</TableHead>
             <TableHead className="text-zinc-500">NOMBRE</TableHead>
             <TableHead className="text-zinc-500">ESTADO</TableHead>
-            <TableHead className="text-zinc-500">ESTADO GHL</TableHead>
             <TableHead className="text-zinc-500">PERSONA ENCARGADA</TableHead>
             <TableHead className="text-zinc-500">FUENTE</TableHead>
             <TableHead className="text-zinc-500">CONTACTO</TableHead>
@@ -154,15 +144,6 @@ export function LeadsTable({ leads }: { leads: ProcessedLead[] }) {
                   {etapaDisplay ? (
                     <Badge variant="outline" className={statusPillClassName(etapaDisplay)}>
                       {etapaDisplay}
-                    </Badge>
-                  ) : (
-                    '—'
-                  )}
-                </TableCell>
-                <TableCell className="text-zinc-500">
-                  {lead.estadoGHL ? (
-                    <Badge variant="outline" className={ghlPillClassName(lead.estadoGHL)}>
-                      {lead.estadoGHL}
                     </Badge>
                   ) : (
                     '—'

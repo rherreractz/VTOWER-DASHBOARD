@@ -1,0 +1,737 @@
+diff --git a/app/api/leads/route.ts b/app/api/leads/route.ts
+index e42576a..2ee1ec7 100644
+--- a/app/api/leads/route.ts
++++ b/app/api/leads/route.ts
+@@ -1,25 +1,19 @@
+-import { NextRequest, NextResponse } from 'next/server';
+-import { getLeads } from '@/lib/googleSheets';
+-import { getHubspotStatusMap } from '@/lib/hubspot';
+-import { processLeads, mergeHubspotStatus } from '@/lib/leadUtils';
++import { NextResponse } from 'next/server';
++import { getGhlRawLeads } from '@/lib/ghl';
++import { processLeads } from '@/lib/leadUtils';
+ 
+ /**
+- * Usado por el botón "Cargar más leads" del dashboard: repite la misma
+- * combinación Sheet + HubSpot de app/page.tsx, pero permite pedir un límite
+- * de contactos de HubSpot más alto que el default (?hubspotLimit=500). Los
+- * contactos que existen SOLO en HubSpot ya no se agregan como leads nuevos.
++ * Devuelve los leads actuales (100% GoHighLevel). Antes esta ruta existía
++ * para el botón "Cargar más leads" ligado a un límite de contactos de
++ * HubSpot (?hubspotLimit=500) — ya no aplica: getGhlRawLeads() siempre trae
++ * TODAS las oportunidades de la cuenta de una sola vez (con caché de 10 min
++ * en lib/ghl.ts), así que no existe un concepto de "cargar más" por límite.
++ * Nada del cliente llama hoy esta ruta (no hay botón "Cargar más" en la UI
++ * actual) — se deja disponible por si hace falta más adelante.
+  */
+-export async function GET(request: NextRequest) {
+-  const hubspotLimitParam = Number(request.nextUrl.searchParams.get('hubspotLimit'));
+-  const hubspotLimit = Number.isFinite(hubspotLimitParam) && hubspotLimitParam > 0 ? hubspotLimitParam : undefined;
++export async function GET() {
++  const rawLeads = await getGhlRawLeads();
++  const leads = processLeads(rawLeads);
+ 
+-  const [rawLeads, hubspotMap] = await Promise.all([getLeads(), getHubspotStatusMap(hubspotLimit)]);
+-
+-  const leads = mergeHubspotStatus(processLeads(rawLeads), hubspotMap);
+-
+-  // Si HubSpot devolvió menos contactos que el límite pedido, ya no quedan
+-  // más por traer (se agotaron los contactos disponibles).
+-  const hasMore = hubspotMap.all.length >= hubspotMap.limit;
+-
+-  return NextResponse.json({ leads, hubspotLimit: hubspotMap.limit, hasMore });
++  return NextResponse.json({ leads, hasMore: false });
+ }
+diff --git a/app/meta-ads/page.tsx b/app/meta-ads/page.tsx
+index 37c452d..171fa9e 100644
+--- a/app/meta-ads/page.tsx
++++ b/app/meta-ads/page.tsx
+@@ -1,68 +1,14 @@
+-import { getLeads } from '@/lib/googleSheets';
+-import { getHubspotStatusMap } from '@/lib/hubspot';
+-import { getGhlStatusMap } from '@/lib/ghl';
+-import {
+-  processLeads,
+-  mergeHubspotStatus,
+-  mergeGhlStatus,
+-  summarizeLeadQualityByFuente,
+-  summarizeLeadQualityByCampana,
+-  buildLeadQualityHistoryChartData,
+-  type LeadQualityHistoryChartPoint,
+-} from '@/lib/leadUtils';
+-import { saveLeadQualitySummary, getLeadQualityHistory } from '@/lib/leadQualityStorage';
++import { loadDashboardData } from '@/lib/dashboardData';
+ import { DashboardTabs } from '@/components/dashboard/dashboard-tabs';
+ 
+-// Revalida la página cada 60s (coordinado con el caché de getLeads() y
+-// getHubspotStatusMap()).
++// Revalida la página cada 60s (coordinado con el caché de getGhlRawLeads()
++// en lib/ghl.ts, que dura 10 min pero se sirve desde memoria).
+ export const revalidate = 60;
+ 
+ export default async function DashboardPage() {
+-  // 1. Extracción segura de datos (Server Component -> nunca se envían
+-  //    credenciales de Google/HubSpot/GHL al cliente). Las 3 fuentes en
+-  //    paralelo. GHL puede tardar (cuenta con ~4,600 oportunidades,
+-  //    paginado) — si falla o tarda demasiado, no tumba el resto del
+-  //    dashboard, solo la columna "Estado GHL" queda sin dato.
+-  const [rawLeads, hubspotMap, ghlMap] = await Promise.all([
+-    getLeads(),
+-    getHubspotStatusMap(),
+-    getGhlStatusMap().catch((err) => {
+-      console.error('[meta-ads/page] Error al leer GoHighLevel, se omite por esta vez:', err);
+-      return { byEmail: new Map() };
+-    }),
+-  ]);
+-
+-  // 2. Limpieza + deduplicación (server-side) SOLO sobre los leads reales
+-  //    del Sheet (los contactos que existen SOLO en HubSpot ya no se
+-  //    agregan como leads nuevos), luego cruce con el estado del CRM
+-  //    (HubSpot primero, GHL después — GHL cruza solo por correo).
+-  const leadsWithHubspot = mergeHubspotStatus(processLeads(rawLeads), hubspotMap);
+-  const leads = mergeGhlStatus(leadsWithHubspot, ghlMap);
+-
+-  // 3. Snapshot de calidad de leads (por Fuente y por Campaña, según el
+-  //    semáforo) — se guarda para que la generación de campañas lo use
+-  //    como contexto real.
+-  try {
+-    await saveLeadQualitySummary({
+-      generatedAt: new Date().toISOString(),
+-      byFuente: summarizeLeadQualityByFuente(leads),
+-      byCampana: summarizeLeadQualityByCampana(leads),
+-    });
+-  } catch (err) {
+-    console.error('[meta-ads/page] Error al guardar calidad de leads:', err);
+-  }
+-
+-  // 4. Historial completo (un punto por día) para la gráfica de línea del
+-  //    tiempo — ya incluye el snapshot de hoy que se acaba de guardar
+-  //    arriba. Si falla, la gráfica simplemente se muestra vacía, no
+-  //    tumba el resto del dashboard.
+-  let leadQualityHistoryChart: { data: LeadQualityHistoryChartPoint[]; fuentes: string[] } = { data: [], fuentes: [] };
+-  try {
+-    const history = await getLeadQualityHistory();
+-    leadQualityHistoryChart = buildLeadQualityHistoryChartData(history);
+-  } catch (err) {
+-    console.error('[meta-ads/page] Error al leer historial de calidad de leads:', err);
+-  }
++  // Misma página que app/page.tsx (es donde /login redirige por defecto) —
++  // ambas comparten la lógica de carga vía lib/dashboardData.ts.
++  const { leads, leadQualityHistoryChart } = await loadDashboardData('meta-ads/page');
+ 
+   const lastUpdated = new Date().toLocaleString('es-MX', {
+     dateStyle: 'long',
+@@ -73,7 +19,8 @@ export default async function DashboardPage() {
+     <div className="flex h-screen flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+       <header className="flex shrink-0 flex-col justify-between gap-1 border-b border-zinc-800 px-6 py-4 sm:flex-row sm:items-end">
+         <div>
+-          <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Live Desarrollos</p>
++          {/* TODO: confirmar nombre/branding exacto del cliente. */}
++          <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">vtower</p>
+           <h1 className="text-xl font-semibold tracking-tight text-zinc-50">Panel de Reportes</h1>
+         </div>
+         <div className="flex items-center gap-4">
+@@ -81,7 +28,7 @@ export default async function DashboardPage() {
+         </div>
+       </header>
+ 
+-      <DashboardTabs leads={leads} initialHubspotLimit={hubspotMap.limit} leadQualityHistory={leadQualityHistoryChart} />
++      <DashboardTabs leads={leads} initialHubspotLimit={0} leadQualityHistory={leadQualityHistoryChart} />
+     </div>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/app/page.tsx b/app/page.tsx
+index efd48bd..2ace398 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -1,74 +1,15 @@
+-import { getLeads } from '@/lib/googleSheets';
+-import { getHubspotStatusMap } from '@/lib/hubspot';
+-import { getGhlStatusMap } from '@/lib/ghl';
+-import {
+-  processLeads,
+-  mergeHubspotStatus,
+-  mergeGhlStatus,
+-  summarizeLeadQualityByFuente,
+-  summarizeLeadQualityByCampana,
+-  buildLeadQualityHistoryChartData,
+-  type LeadQualityHistoryChartPoint,
+-} from '@/lib/leadUtils';
+-import { saveLeadQualitySummary, getLeadQualityHistory } from '@/lib/leadQualityStorage';
++import { loadDashboardData } from '@/lib/dashboardData';
+ import { DashboardTabs } from '@/components/dashboard/dashboard-tabs';
+ 
+-// Revalida la página cada 60s (coordinado con el caché de getLeads() y
+-// getHubspotStatusMap()).
++// Revalida la página cada 60s (coordinado con el caché de getGhlRawLeads()
++// en lib/ghl.ts, que dura 10 min pero se sirve desde memoria).
+ export const revalidate = 60;
+ 
+ export default async function DashboardPage() {
+-  // 1. Extracción segura de datos (Server Component -> nunca se envían
+-  //    credenciales de Google/HubSpot/GHL al cliente). Las 3 fuentes en
+-  //    paralelo. GHL puede tardar (cuenta con ~4,600 oportunidades,
+-  //    paginado) — si falla o tarda demasiado, no tumba el resto del
+-  //    dashboard, solo la columna "Estado GHL" queda sin dato.
+-  const [rawLeads, hubspotMap, ghlMap] = await Promise.all([
+-    getLeads(),
+-    getHubspotStatusMap(),
+-    getGhlStatusMap().catch((err) => {
+-      console.error('[page] Error al leer GoHighLevel, se omite por esta vez:', err);
+-      return { byEmail: new Map() };
+-    }),
+-  ]);
+-
+-  // 2. Limpieza + deduplicación (server-side) SOLO sobre los leads reales
+-  //    del Sheet (ya no se agregan contactos que solo existen en HubSpot
+-  //    como leads nuevos — se decidió que no deben aparecer en la tabla,
+-  //    HubSpot se usa únicamente para enriquecer los leads que sí vienen
+-  //    del Sheet). Luego cruce con el estado del CRM (HubSpot primero,
+-  //    GHL después — GHL cruza solo por correo).
+-  const leadsWithHubspot = mergeHubspotStatus(processLeads(rawLeads), hubspotMap);
+-  const leads = mergeGhlStatus(leadsWithHubspot, ghlMap);
+-
+-  // 3. Snapshot de calidad de leads (por Fuente y por Campaña, según el
+-  //    semáforo) — se guarda para que la generación de campañas lo use
+-  //    como contexto real, sin tener que recalcular todo esto de nuevo.
+-  //    Se espera (await) en vez de fire-and-forget: en un entorno
+-  //    serverless, una promesa sin esperar puede cortarse antes de
+-  //    terminar cuando la respuesta ya se mandó — el costo extra aquí es
+-  //    mínimo (un par de llamadas al Sheet), no la parte pesada de GHL.
+-  try {
+-    await saveLeadQualitySummary({
+-      generatedAt: new Date().toISOString(),
+-      byFuente: summarizeLeadQualityByFuente(leads),
+-      byCampana: summarizeLeadQualityByCampana(leads),
+-    });
+-  } catch (err) {
+-    console.error('[page] Error al guardar calidad de leads:', err);
+-  }
+-
+-  // 4. Historial completo (un punto por día) para la gráfica de línea del
+-  //    tiempo — ya incluye el snapshot de hoy que se acaba de guardar
+-  //    arriba. Si falla, la gráfica simplemente se muestra vacía, no
+-  //    tumba el resto del dashboard.
+-  let leadQualityHistoryChart: { data: LeadQualityHistoryChartPoint[]; fuentes: string[] } = { data: [], fuentes: [] };
+-  try {
+-    const history = await getLeadQualityHistory();
+-    leadQualityHistoryChart = buildLeadQualityHistoryChartData(history);
+-  } catch (err) {
+-    console.error('[page] Error al leer historial de calidad de leads:', err);
+-  }
++  // Server Component -> las credenciales de GoHighLevel nunca se envían al
++  // cliente. vtower usa GoHighLevel como fuente ÚNICA de leads (a
++  // diferencia de Live: no hay Google Sheet fuente ni HubSpot).
++  const { leads, leadQualityHistoryChart } = await loadDashboardData('page');
+ 
+   const lastUpdated = new Date().toLocaleString('es-MX', {
+     dateStyle: 'long',
+@@ -79,7 +20,8 @@ export default async function DashboardPage() {
+     <div className="flex h-screen flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+       <header className="flex shrink-0 flex-col justify-between gap-1 border-b border-zinc-800 px-6 py-4 sm:flex-row sm:items-end">
+         <div>
+-          <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Live Desarrollos</p>
++          {/* TODO: confirmar nombre/branding exacto del cliente. */}
++          <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">vtower</p>
+           <h1 className="text-xl font-semibold tracking-tight text-zinc-50">Panel de Reportes</h1>
+         </div>
+         <div className="flex items-center gap-4">
+@@ -87,7 +29,10 @@ export default async function DashboardPage() {
+         </div>
+       </header>
+ 
+-      <DashboardTabs leads={leads} initialHubspotLimit={hubspotMap.limit} leadQualityHistory={leadQualityHistoryChart} />
++      {/* initialHubspotLimit ya no aplica (no hay HubSpot) — se pasa 0 solo
++          para satisfacer el tipo de DashboardTabs; el componente no lo usa
++          para nada más. */}
++      <DashboardTabs leads={leads} initialHubspotLimit={0} leadQualityHistory={leadQualityHistoryChart} />
+     </div>
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/lib/ghl.ts b/lib/ghl.ts
+index f8cc87e..6a5fa8b 100644
+--- a/lib/ghl.ts
++++ b/lib/ghl.ts
+@@ -1,27 +1,60 @@
+-import { normalizeEmail } from './leadUtils';
++import { normalizeEmail, ghlLeadToRawLead } from './leadUtils';
++import type { RawLead } from './types';
+ 
+ /**
+  * Integración con GoHighLevel (GHL) — API v2, autenticada con un Private
+  * Integration Token (los API Keys viejos de v1 ya no se pueden generar,
+  * GHL los dio de baja a finales de 2025).
+  *
+- * Trae las oportunidades (tus leads dentro de GHL) con su Stage del
+- * pipeline y el usuario asignado, y arma un mapa por CORREO normalizado
+- * para mezclarlo con los leads que ya vienen de Sheets/HubSpot — mismo
+- * patrón que lib/hubspot.ts.
++ * vtower usa GHL como fuente ÚNICA y PRIMARIA de leads — a diferencia de
++ * Live, que solo lo usaba para enriquecer leads que venían de un Google
++ * Sheet. Por eso este archivo expone dos cosas distintas:
++ *
++ *   - getGhlRawLeads()  -> RawLead[] de las oportunidades del "Marketing
++ *     Pipeline" (fuente primaria, úsalo en app/page.tsx). NO descarta
++ *     oportunidades sin correo — solo un contacto sin correo no podrá
++ *     cruzarse más adelante con otra fuente por correo.
++ *   - getGhlStatusMap() -> Map por correo (para enriquecer leads que vengan
++ *     de otro lado, ej. si más adelante vuelve a entrar un Sheet fuente,
++ *     usado junto con mergeGhlStatus() de lib/leadUtils.ts).
++ *
++ * IMPORTANTE — vtower tiene 3 pipelines en GHL, pero solo UNO es el embudo
++ * real de leads de Meta Ads:
++ *   - "Marketing Pipeline" (nativo de GHL): Brokers, Descarte, Nuevo Lead,
++ *     Intento de Contacto, Contactado, Calificado, Cita Agendada, Cita
++ *     Realizada, Negociación, Apartado, Venta Cerrada. AQUÍ caen los leads
++ *     de Facebook/Meta — confirmado con el equipo (ago-2026).
++ *   - "Pipeline ITM" y "Pipeline de ventas": ambos importados de HubSpot el
++ *     mismo día, son procesos de cierre/escrituración POSVENTA (firma de
++ *     contrato, entrega de inmueble, etc.), no tienen que ver con leads
++ *     nuevos de Meta Ads — el equipo confirmó EXCLUIRLOS del dashboard de
++ *     leads. Por eso getGhlRawLeads()/getGhlStatusMap() solo traen
++ *     oportunidades de "Marketing Pipeline" (filtrado por nombre, ver
++ *     GHL_MARKETING_PIPELINE_NAME abajo).
++ *
++ * Ambas funciones exportadas comparten el mismo fetch pesado (pipelines +
++ * usuarios + oportunidades paginadas, ya filtradas a un solo pipeline) y el
++ * mismo caché en memoria de 10 min — así no se paga el costo de traer todo
++ * dos veces.
+  *
+  * Variables de entorno requeridas:
+  * GHL_PRIVATE_TOKEN="pit-..."
+  * GHL_LOCATION_ID="..."
+  *
+- * Opcional — si el endpoint de usuarios de GHL no responde bien (le pasó a
+- * otra herramienta del equipo, según vimos), puedes definir un mapa fijo
+- * de respaldo en vez de depender de la API:
++ * Opcionales:
++ * GHL_MARKETING_PIPELINE_NAME="Marketing Pipeline"
++ *   Nombre EXACTO (no case-sensitive) del pipeline que se usa como fuente
++ *   de leads. Por defecto "Marketing Pipeline" — cámbialo solo si el
++ *   equipo renombra el pipeline en GHL.
+  * GHL_USERS_FALLBACK='{"userId1":"Nombre Apellido","userId2":"Otro Nombre"}'
++ *   Si el endpoint de usuarios de GHL no responde bien (le pasó a otra
++ *   herramienta del equipo, según vimos), puedes definir un mapa fijo de
++ *   respaldo en vez de depender de la API.
+  */
+ 
+ const GHL_API_BASE = 'https://services.leadconnectorhq.com';
+ const GHL_API_VERSION = '2021-07-28';
++const MARKETING_PIPELINE_NAME = process.env.GHL_MARKETING_PIPELINE_NAME || 'Marketing Pipeline';
+ 
+ interface GhlPipelineStage {
+   id: string;
+@@ -34,6 +67,12 @@ interface GhlPipeline {
+   stages: GhlPipelineStage[];
+ }
+ 
++interface GhlAttribution {
++  utmCampaign?: string | null;
++  isFirst?: boolean;
++  isLast?: boolean;
++}
++
+ interface GhlOpportunity {
+   id: string;
+   name: string;
+@@ -41,7 +80,13 @@ interface GhlOpportunity {
+   pipelineStageId: string;
+   assignedTo?: string | null;
+   contactId: string;
+-  contact?: { email?: string | null; phone?: string | null } | null;
++  /** Fuente/atribución de la oportunidad, si GHL la trae (ej. "Facebook"). */
++  source?: string | null;
++  createdAt?: string | null;
++  dateAdded?: string | null;
++  contact?: { name?: string | null; email?: string | null; phone?: string | null } | null;
++  /** Historial de atribución UTM (primer y último touchpoint) — de aquí sacamos utmCampaign. */
++  attributions?: GhlAttribution[] | null;
+ }
+ 
+ export interface GhlStatusEntry {
+@@ -77,6 +122,15 @@ async function fetchPipelines(token: string, locationId: string): Promise<Map<st
+   return new Map(pipelines.map((p) => [p.id, p]));
+ }
+ 
++/** Busca, por NOMBRE (no case-sensitive), el pipeline configurado como fuente de leads. */
++function resolveMarketingPipeline(pipelines: Map<string, GhlPipeline>): GhlPipeline | null {
++  const target = MARKETING_PIPELINE_NAME.trim().toLowerCase();
++  for (const pipeline of pipelines.values()) {
++    if (pipeline.name.trim().toLowerCase() === target) return pipeline;
++  }
++  return null;
++}
++
+ /**
+  * Trae el mapa userId -> nombre. Primero intenta la API real; si falla o
+  * viene vacía (le pasa a veces a GHL), cae al mapa fijo de
+@@ -115,15 +169,24 @@ async function fetchUsersMap(token: string, locationId: string): Promise<Map<str
+   return new Map();
+ }
+ 
+-/** Trae TODAS las oportunidades de la Location (paginado). */
+-async function fetchAllOpportunities(token: string, locationId: string): Promise<GhlOpportunity[]> {
++/**
++ * Trae TODAS las oportunidades de la Location (paginado), filtradas a un
++ * solo pipeline si se pasa `pipelineId` (así no traemos ni pagineamos las
++ * oportunidades de los otros pipelines que no son leads de Meta Ads).
++ */
++async function fetchAllOpportunities(
++  token: string,
++  locationId: string,
++  pipelineId?: string,
++): Promise<GhlOpportunity[]> {
+   const all: GhlOpportunity[] = [];
++  const pipelineFilter = pipelineId ? `&pipeline_id=${encodeURIComponent(pipelineId)}` : '';
+   let nextPageUrl: string | null =
+-    `${GHL_API_BASE}/opportunities/search?location_id=${encodeURIComponent(locationId)}&limit=100`;
++    `${GHL_API_BASE}/opportunities/search?location_id=${encodeURIComponent(locationId)}&limit=100${pipelineFilter}`;
+ 
+   // Tope de seguridad: máximo 60 páginas (a 100 por página = 6000
+-  // oportunidades). La cuenta real tiene ~4,642 al momento de escribir
+-  // esto — con margen para que siga creciendo sin tocar código.
++  // oportunidades) — con margen para que la cuenta siga creciendo sin
++  // tocar código.
+   let safety = 0;
+   while (nextPageUrl && safety < 60) {
+     safety += 1;
+@@ -144,65 +207,77 @@ async function fetchAllOpportunities(token: string, locationId: string): Promise
+   return all;
+ }
+ 
++/** Saca el nombre de campaña (utmCampaign) de la atribución de una oportunidad — prioriza el primer touchpoint (isFirst). */
++function pickCampaignFromAttributions(attributions?: GhlAttribution[] | null): string {
++  if (!attributions || attributions.length === 0) return '';
++  const chosen = attributions.find((a) => a.isFirst) ?? attributions[0];
++  return chosen?.utmCampaign?.trim() || '';
++}
++
++interface GhlDataSnapshot {
++  pipelines: Map<string, GhlPipeline>;
++  usersMap: Map<string, string>;
++  /** Oportunidades del "Marketing Pipeline" únicamente, ya deduplicadas por id. */
++  opportunities: GhlOpportunity[];
++}
++
+ /**
+  * Versión SIN caché — hace el trabajo pesado real (pipelines + usuarios +
+- * las ~47 páginas de oportunidades). Úsala solo si necesitas datos 100%
+- * frescos ahora mismo; para el uso normal del dashboard usa
+- * getGhlStatusMap() de abajo, que cachea el resultado.
++ * las páginas de oportunidades del pipeline de leads). Úsala solo si
++ * necesitas datos 100% frescos ahora mismo; para el uso normal del
++ * dashboard usa getGhlData() de abajo, que cachea el resultado.
+  */
+-async function getGhlStatusMapUncached(): Promise<GhlStatusMap> {
++async function getGhlDataUncached(): Promise<GhlDataSnapshot> {
+   const token = process.env.GHL_PRIVATE_TOKEN;
+   const locationId = process.env.GHL_LOCATION_ID;
+ 
+   if (!token || !locationId) {
+     console.error('[ghl] Faltan GHL_PRIVATE_TOKEN / GHL_LOCATION_ID — se omite la integración con GoHighLevel.');
+-    return { byEmail: new Map() };
++    return { pipelines: new Map(), usersMap: new Map(), opportunities: [] };
+   }
+ 
+-  const [pipelines, usersMap, opportunities] = await Promise.all([
+-    fetchPipelines(token, locationId),
+-    fetchUsersMap(token, locationId),
+-    fetchAllOpportunities(token, locationId),
+-  ]);
+-
+-  const byEmail = new Map<string, GhlStatusEntry>();
++  const pipelines = await fetchPipelines(token, locationId);
++  const marketingPipeline = resolveMarketingPipeline(pipelines);
+ 
+-  for (const opp of opportunities) {
+-    const email = normalizeEmail(opp.contact?.email);
+-    if (!email) continue; // sin correo no podemos cruzarlo con tus leads
+-
+-    const pipeline = pipelines.get(opp.pipelineId);
+-    const stage = pipeline?.stages.find((s) => s.id === opp.pipelineStageId);
+-
+-    byEmail.set(email, {
+-      estadoGHL: stage?.name ?? 'Sin etapa',
+-      pipelineGHL: pipeline?.name ?? 'Sin pipeline',
+-      personaEncargadaGHL: opp.assignedTo ? (usersMap.get(opp.assignedTo) ?? 'Sin asignar') : 'Sin asignar',
+-    });
++  if (!marketingPipeline) {
++    console.error(
++      `[ghl] No se encontró el pipeline "${MARKETING_PIPELINE_NAME}" entre los pipelines de la cuenta ` +
++        `(${Array.from(pipelines.values()).map((p) => p.name).join(', ') || 'ninguno'}). ` +
++        'Revisa GHL_MARKETING_PIPELINE_NAME, o compara contra /api/ghl-debug. Se omiten los leads por esta vez.',
++    );
++    return { pipelines, usersMap: new Map(), opportunities: [] };
+   }
+ 
+-  console.log(`[ghl] Refrescado: ${byEmail.size} correos indexados de ${opportunities.length} oportunidades.`);
++  const [usersMap, rawOpportunities] = await Promise.all([
++    fetchUsersMap(token, locationId),
++    fetchAllOpportunities(token, locationId, marketingPipeline.id),
++  ]);
+ 
+-  return { byEmail };
++  // Dedup por id — por si el cursor de paginación llegara a repetir una
++  // página (no debería pasar, pero es gratis cubrirlo).
++  const byId = new Map<string, GhlOpportunity>();
++  rawOpportunities.forEach((opp) => byId.set(opp.id, opp));
++
++  return { pipelines, usersMap, opportunities: Array.from(byId.values()) };
+ }
+ 
+ /**
+- * CACHÉ EN MEMORIA — la cuenta tiene ~4,600 oportunidades, traerlas todas
+- * (paginado, ~47 llamadas seguidas a la API) tarda 15-30+ segundos. Sin
+- * caché, esto pasaba en CADA carga del dashboard. Con esto, solo la
+- * primera visita (o la primera después de que expire el caché) paga ese
+- * costo — el resto se sirve al instante desde memoria.
++ * CACHÉ EN MEMORIA — la cuenta puede tener miles de oportunidades, traerlas
++ * todas (paginado, decenas de llamadas seguidas a la API) puede tardar
++ * bastantes segundos. Sin caché, esto pasaba en CADA carga del dashboard.
++ * Con esto, solo la primera visita (o la primera después de que expire el
++ * caché) paga ese costo — el resto se sirve al instante desde memoria.
+  *
+- * Vive mientras la función serverless siga "caliente" (Vercel reutiliza
+- * la misma instancia entre requests seguidos) — en un cold start se
+- * vuelve a llenar solo, sin que haya que hacer nada manualmente.
++ * Vive mientras la función serverless siga "caliente" (Vercel reutiliza la
++ * misma instancia entre requests seguidos) — en un cold start se vuelve a
++ * llenar solo, sin que haya que hacer nada manualmente.
+  */
+ const GHL_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+ 
+-let ghlCache: { data: GhlStatusMap; fetchedAt: number } | null = null;
+-let ghlCacheInFlight: Promise<GhlStatusMap> | null = null;
++let ghlCache: { data: GhlDataSnapshot; fetchedAt: number } | null = null;
++let ghlCacheInFlight: Promise<GhlDataSnapshot> | null = null;
+ 
+-export async function getGhlStatusMap(): Promise<GhlStatusMap> {
++async function getGhlData(): Promise<GhlDataSnapshot> {
+   const now = Date.now();
+ 
+   if (ghlCache && now - ghlCache.fetchedAt < GHL_CACHE_TTL_MS) {
+@@ -216,7 +291,7 @@ export async function getGhlStatusMap(): Promise<GhlStatusMap> {
+     return ghlCacheInFlight;
+   }
+ 
+-  ghlCacheInFlight = getGhlStatusMapUncached()
++  ghlCacheInFlight = getGhlDataUncached()
+     .then((data) => {
+       ghlCache = { data, fetchedAt: Date.now() };
+       return data;
+@@ -228,9 +303,71 @@ export async function getGhlStatusMap(): Promise<GhlStatusMap> {
+   return ghlCacheInFlight;
+ }
+ 
++/**
++ * Fuente PRIMARIA de leads para vtower: TODAS las oportunidades del
++ * "Marketing Pipeline" (ver nota de arriba sobre por qué solo ese
++ * pipeline), convertidas a RawLead[]. NO descarta oportunidades sin correo
++ * (se dedupe por id de oportunidad, no por correo) — así un contacto sin
++ * correo sigue apareciendo como lead en la tabla.
++ */
++export async function getGhlRawLeads(): Promise<RawLead[]> {
++  const { pipelines, usersMap, opportunities } = await getGhlData();
++
++  const leads = opportunities.map((opp) => {
++    const pipeline = pipelines.get(opp.pipelineId);
++    const stage = pipeline?.stages.find((s) => s.id === opp.pipelineStageId);
++
++    return ghlLeadToRawLead({
++      createdAt: opp.createdAt || opp.dateAdded || '',
++      nombre: opp.contact?.name || opp.name || 'Sin nombre',
++      correo: opp.contact?.email || '',
++      telefono: opp.contact?.phone || '',
++      fuente: opp.source || '',
++      campana: pickCampaignFromAttributions(opp.attributions),
++      estadoGHL: stage?.name ?? 'Sin etapa',
++      pipelineGHL: pipeline?.name ?? 'Sin pipeline',
++      personaEncargadaGHL: opp.assignedTo ? (usersMap.get(opp.assignedTo) ?? 'Sin asignar') : 'Sin asignar',
++    });
++  });
++
++  console.log(`[ghl] getGhlRawLeads: ${leads.length} oportunidades de "${MARKETING_PIPELINE_NAME}" convertidas a leads.`);
++
++  return leads;
++}
++
++/**
++ * Mapa por correo normalizado — para ENRIQUECER leads que ya vienen de otro
++ * lado (no se usa en el flujo principal de vtower, que usa GHL como fuente
++ * primaria vía getGhlRawLeads(); se conserva por si más adelante entra un
++ * Sheet fuente y hay que volver a cruzar, ver "Invariante" en el handoff).
++ */
++export async function getGhlStatusMap(): Promise<GhlStatusMap> {
++  const { pipelines, usersMap, opportunities } = await getGhlData();
++
++  const byEmail = new Map<string, GhlStatusEntry>();
++
++  for (const opp of opportunities) {
++    const email = normalizeEmail(opp.contact?.email);
++    if (!email) continue; // sin correo no podemos cruzarlo con leads de otra fuente
++
++    const pipeline = pipelines.get(opp.pipelineId);
++    const stage = pipeline?.stages.find((s) => s.id === opp.pipelineStageId);
++
++    byEmail.set(email, {
++      estadoGHL: stage?.name ?? 'Sin etapa',
++      pipelineGHL: pipeline?.name ?? 'Sin pipeline',
++      personaEncargadaGHL: opp.assignedTo ? (usersMap.get(opp.assignedTo) ?? 'Sin asignar') : 'Sin asignar',
++    });
++  }
++
++  console.log(`[ghl] Refrescado: ${byEmail.size} correos indexados de ${opportunities.length} oportunidades.`);
++
++  return { byEmail };
++}
++
+ /** Busca el estado de GHL de un lead por su correo (ya normalizado o crudo). */
+ export function lookupGhlStatus(map: GhlStatusMap, email?: string | null): GhlStatusEntry | null {
+   const key = normalizeEmail(email);
+   if (!key) return null;
+   return map.byEmail.get(key) ?? null;
+-}
+\ No newline at end of file
++}
+diff --git a/lib/leadUtils.ts b/lib/leadUtils.ts
+index c5d8e6e..8dbaddf 100644
+--- a/lib/leadUtils.ts
++++ b/lib/leadUtils.ts
+@@ -180,6 +180,76 @@ export function getHubspotRawLeads(hubspotMap: HubspotStatusMap): RawLead[] {
+   return hubspotMap.all.map(hubspotContactToRawLead);
+ }
+ 
++// ---------------------------------------------------------------------------
++// GoHighLevel como fuente PRIMARIA de leads (vtower) — equivalente a
++// hubspotContactToRawLead()/getHubspotRawLeads() de arriba, pero para GHL.
++// ---------------------------------------------------------------------------
++
++/**
++ * Forma ya resuelta de una oportunidad de GHL (nombre de stage, de pipeline
++ * y de la persona asignada ya buscados) — no el objeto crudo de la API
++ * (ese vive en lib/ghl.ts, que ya tiene sus propios tipos). Se define como
++ * forma plana aquí, en vez de importar los tipos de ghl.ts, para evitar un
++ * import circular en tiempo de ejecución (ghl.ts ya importa funciones de
++ * este archivo).
++ */
++export interface GhlLeadInput {
++  createdAt: string;
++  nombre: string;
++  correo: string;
++  telefono: string;
++  fuente: string;
++  /** Nombre de campaña sacado de la atribución UTM de GHL (utmCampaign), si existe. */
++  campana: string;
++  estadoGHL: string;
++  pipelineGHL: string;
++  personaEncargadaGHL: string;
++}
++
++/**
++ * Convierte una oportunidad de GoHighLevel en un RawLead, para usarla como
++ * fuente PRIMARIA (a diferencia de mergeGhlStatus(), que solo enriquece
++ * leads que ya vienen de otro lado). Los campos que solo existían en el
++ * Sheet/HubSpot y que GHL no tiene de forma nativa (Presupuesto, Motivo,
++ * TiempoParaInvertir, Equipo, Proveedor) quedan vacíos — se muestran como
++ * "No especificado" (o "—" en la tabla) una vez procesados. "Fuente" se
++ * llena con el campo `source` de la oportunidad (ej. "Facebook"); si no
++ * viene, cae a "GoHighLevel". "Campaña" se llena con el `utmCampaign` de
++ * la atribución de GHL cuando existe (ej. "V Tower | Lead Generation"); si
++ * no hay atribución, queda vacía ("No especificado").
++ *
++ * Importante: además de los campos de RawLead, esto agrega
++ * estadoGHL/pipelineGHL/personaEncargadaGHL directamente en el objeto (en
++ * vez de depender de mergeGhlStatus(), que cruza por correo) — así un lead
++ * SIN correo no se queda sin su estado de GHL. processLeads() conserva
++ * cualquier propiedad extra del objeto original porque arma el resultado
++ * con spread (`{ ...lead, ... }`), y ProcessedLead ya declara esos tres
++ * campos como opcionales (lib/types.ts) — no hace falta tocar ese tipo.
++ */
++export function ghlLeadToRawLead(
++  g: GhlLeadInput,
++): RawLead & { estadoGHL: string; pipelineGHL: string; personaEncargadaGHL: string } {
++  return {
++    Fecha: g.createdAt,
++    Campana: g.campana || '',
++    Nombre: g.nombre || 'Sin nombre',
++    Correo: g.correo,
++    Telefono: g.telefono,
++    Presupuesto: '',
++    Motivo: '',
++    TiempoParaInvertir: '',
++    Equipo: '',
++    Fuente: g.fuente || 'GoHighLevel',
++    Proveedor: '',
++    Formulario: '',
++    Etapa: g.estadoGHL,
++    Comentarios: `Oportunidad de GoHighLevel · Pipeline: ${g.pipelineGHL}.`,
++    estadoGHL: g.estadoGHL,
++    pipelineGHL: g.pipelineGHL,
++    personaEncargadaGHL: g.personaEncargadaGHL,
++  };
++}
++
+ /**
+  * Devuelve un RawLead sintético por cada contacto de HubSpot que NO tenga
+  * ya un lead con el mismo teléfono o correo en `existingLeads` (los del
+@@ -412,13 +482,52 @@ function classifyEtapaColor(etapaRaw: string): 'Rojo' | 'Amarillo' | 'Verde' | n
+ }
+ 
+ /**
+- * Punto único de verdad para el semáforo de un lead: si tiene match en
+- * GoHighLevel, se clasifica por el NÚMERO de su etapa GHL (más confiable —
+- * ver classifyGhlStageNumber). Si no hay dato de GHL para ese lead, cae al
+- * método anterior por palabra clave sobre la Etapa de HubSpot/Sheet.
++ * Mapa FIJO etapa (nombre exacto tal como aparece en GHL) -> color, para las
++ * etapas reales del "Marketing Pipeline" de vtower — confirmado con el
++ * equipo (ago-2026), ya que vtower NO usa la numeración tipo "10 -
++ * Registro" de Live (classifyGhlStageNumber no aplica aquí).
++ *
++ * Es un mapeo EXACTO por nombre, no por palabra clave — si en algún
++ * momento el equipo agrega o renombra una etapa en GHL, esa etapa nueva
++ * cae a "Sin clasificar" (gris) hasta que se agregue aquí a propósito, en
++ * vez de adivinar mal por keyword.
++ */
++const VTOWER_MARKETING_STAGE_COLOR: Record<string, 'Rojo' | 'Amarillo' | 'Verde'> = {
++  brokers: 'Amarillo', // leads canalizados a agentes/brokers externos — confirmado con el equipo
++  descarte: 'Rojo',
++  'nuevo lead': 'Amarillo',
++  'intento de contacto': 'Amarillo', // se intentó pero no se confirma contacto — confirmado con el equipo
++  contactado: 'Verde',
++  calificado: 'Verde',
++  'cita agendada': 'Verde',
++  'cita realizada': 'Verde',
++  negociación: 'Verde',
++  negociacion: 'Verde', // por si en algún punto se guarda/exporta sin acento
++  apartado: 'Verde',
++  'venta cerrada': 'Verde',
++};
++
++/** Clasifica una etapa del "Marketing Pipeline" de vtower por su nombre EXACTO (ver tabla de arriba). */
++function classifyVtowerMarketingStage(stageName: string): 'Rojo' | 'Amarillo' | 'Verde' | null {
++  const key = stageName.trim().toLowerCase();
++  return VTOWER_MARKETING_STAGE_COLOR[key] ?? null;
++}
++
++/**
++ * Punto único de verdad para el semáforo de un lead. Orden de prioridad:
++ *  1. Nombre exacto de etapa del "Marketing Pipeline" de vtower (más
++ *     confiable — es el mapa que el equipo confirmó a mano).
++ *  2. Número inicial de la etapa GHL (convención de Live, "10 - Registro"
++ *     — vtower no la usa hoy, pero se deja como red de seguridad genérica
++ *     por si algún día aplica).
++ *  3. Palabra clave sobre la Etapa de HubSpot/Sheet (fallback histórico de
++ *     Live, tampoco debería activarse en vtower hoy).
+  */
+ export function getSemaforoColor(lead: ProcessedLead): 'Rojo' | 'Amarillo' | 'Verde' | null {
+   if (lead.estadoGHL) {
++    const fromVtowerStage = classifyVtowerMarketingStage(lead.estadoGHL);
++    if (fromVtowerStage) return fromVtowerStage;
++
+     const fromGhl = classifyGhlStageNumber(lead.estadoGHL);
+     if (fromGhl) return fromGhl;
+   }

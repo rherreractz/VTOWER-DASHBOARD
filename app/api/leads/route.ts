@@ -1,25 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getLeads } from '@/lib/googleSheets';
-import { getHubspotStatusMap } from '@/lib/hubspot';
-import { processLeads, mergeHubspotStatus } from '@/lib/leadUtils';
+import { NextResponse } from 'next/server';
+import { getGhlRawLeads } from '@/lib/ghl';
+import { processLeads } from '@/lib/leadUtils';
 
 /**
- * Usado por el botón "Cargar más leads" del dashboard: repite la misma
- * combinación Sheet + HubSpot de app/page.tsx, pero permite pedir un límite
- * de contactos de HubSpot más alto que el default (?hubspotLimit=500). Los
- * contactos que existen SOLO en HubSpot ya no se agregan como leads nuevos.
+ * Devuelve los leads actuales (100% GoHighLevel). Antes esta ruta existía
+ * para el botón "Cargar más leads" ligado a un límite de contactos de
+ * HubSpot (?hubspotLimit=500) — ya no aplica: getGhlRawLeads() siempre trae
+ * TODAS las oportunidades de la cuenta de una sola vez (con caché de 10 min
+ * en lib/ghl.ts), así que no existe un concepto de "cargar más" por límite.
+ * Nada del cliente llama hoy esta ruta (no hay botón "Cargar más" en la UI
+ * actual) — se deja disponible por si hace falta más adelante.
  */
-export async function GET(request: NextRequest) {
-  const hubspotLimitParam = Number(request.nextUrl.searchParams.get('hubspotLimit'));
-  const hubspotLimit = Number.isFinite(hubspotLimitParam) && hubspotLimitParam > 0 ? hubspotLimitParam : undefined;
+export async function GET() {
+  const rawLeads = await getGhlRawLeads();
+  const leads = processLeads(rawLeads);
 
-  const [rawLeads, hubspotMap] = await Promise.all([getLeads(), getHubspotStatusMap(hubspotLimit)]);
-
-  const leads = mergeHubspotStatus(processLeads(rawLeads), hubspotMap);
-
-  // Si HubSpot devolvió menos contactos que el límite pedido, ya no quedan
-  // más por traer (se agotaron los contactos disponibles).
-  const hasMore = hubspotMap.all.length >= hubspotMap.limit;
-
-  return NextResponse.json({ leads, hubspotLimit: hubspotMap.limit, hasMore });
+  return NextResponse.json({ leads, hasMore: false });
 }

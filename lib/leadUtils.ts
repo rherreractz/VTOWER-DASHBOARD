@@ -180,6 +180,76 @@ export function getHubspotRawLeads(hubspotMap: HubspotStatusMap): RawLead[] {
   return hubspotMap.all.map(hubspotContactToRawLead);
 }
 
+// ---------------------------------------------------------------------------
+// GoHighLevel como fuente PRIMARIA de leads (vtower) — equivalente a
+// hubspotContactToRawLead()/getHubspotRawLeads() de arriba, pero para GHL.
+// ---------------------------------------------------------------------------
+
+/**
+ * Forma ya resuelta de una oportunidad de GHL (nombre de stage, de pipeline
+ * y de la persona asignada ya buscados) — no el objeto crudo de la API
+ * (ese vive en lib/ghl.ts, que ya tiene sus propios tipos). Se define como
+ * forma plana aquí, en vez de importar los tipos de ghl.ts, para evitar un
+ * import circular en tiempo de ejecución (ghl.ts ya importa funciones de
+ * este archivo).
+ */
+export interface GhlLeadInput {
+  createdAt: string;
+  nombre: string;
+  correo: string;
+  telefono: string;
+  fuente: string;
+  /** Nombre de campaña sacado de la atribución UTM de GHL (utmCampaign), si existe. */
+  campana: string;
+  estadoGHL: string;
+  pipelineGHL: string;
+  personaEncargadaGHL: string;
+}
+
+/**
+ * Convierte una oportunidad de GoHighLevel en un RawLead, para usarla como
+ * fuente PRIMARIA (a diferencia de mergeGhlStatus(), que solo enriquece
+ * leads que ya vienen de otro lado). Los campos que solo existían en el
+ * Sheet/HubSpot y que GHL no tiene de forma nativa (Presupuesto, Motivo,
+ * TiempoParaInvertir, Equipo, Proveedor) quedan vacíos — se muestran como
+ * "No especificado" (o "—" en la tabla) una vez procesados. "Fuente" se
+ * llena con el campo `source` de la oportunidad (ej. "Facebook"); si no
+ * viene, cae a "GoHighLevel". "Campaña" se llena con el `utmCampaign` de
+ * la atribución de GHL cuando existe (ej. "V Tower | Lead Generation"); si
+ * no hay atribución, queda vacía ("No especificado").
+ *
+ * Importante: además de los campos de RawLead, esto agrega
+ * estadoGHL/pipelineGHL/personaEncargadaGHL directamente en el objeto (en
+ * vez de depender de mergeGhlStatus(), que cruza por correo) — así un lead
+ * SIN correo no se queda sin su estado de GHL. processLeads() conserva
+ * cualquier propiedad extra del objeto original porque arma el resultado
+ * con spread (`{ ...lead, ... }`), y ProcessedLead ya declara esos tres
+ * campos como opcionales (lib/types.ts) — no hace falta tocar ese tipo.
+ */
+export function ghlLeadToRawLead(
+  g: GhlLeadInput,
+): RawLead & { estadoGHL: string; pipelineGHL: string; personaEncargadaGHL: string } {
+  return {
+    Fecha: g.createdAt,
+    Campana: g.campana || '',
+    Nombre: g.nombre || 'Sin nombre',
+    Correo: g.correo,
+    Telefono: g.telefono,
+    Presupuesto: '',
+    Motivo: '',
+    TiempoParaInvertir: '',
+    Equipo: '',
+    Fuente: g.fuente || 'GoHighLevel',
+    Proveedor: '',
+    Formulario: '',
+    Etapa: g.estadoGHL,
+    Comentarios: `Oportunidad de GoHighLevel · Pipeline: ${g.pipelineGHL}.`,
+    estadoGHL: g.estadoGHL,
+    pipelineGHL: g.pipelineGHL,
+    personaEncargadaGHL: g.personaEncargadaGHL,
+  };
+}
+
 /**
  * Devuelve un RawLead sintético por cada contacto de HubSpot que NO tenga
  * ya un lead con el mismo teléfono o correo en `existingLeads` (los del
@@ -412,13 +482,52 @@ function classifyEtapaColor(etapaRaw: string): 'Rojo' | 'Amarillo' | 'Verde' | n
 }
 
 /**
- * Punto único de verdad para el semáforo de un lead: si tiene match en
- * GoHighLevel, se clasifica por el NÚMERO de su etapa GHL (más confiable —
- * ver classifyGhlStageNumber). Si no hay dato de GHL para ese lead, cae al
- * método anterior por palabra clave sobre la Etapa de HubSpot/Sheet.
+ * Mapa FIJO etapa (nombre exacto tal como aparece en GHL) -> color, para las
+ * etapas reales del "Marketing Pipeline" de vtower — confirmado con el
+ * equipo (ago-2026), ya que vtower NO usa la numeración tipo "10 -
+ * Registro" de Live (classifyGhlStageNumber no aplica aquí).
+ *
+ * Es un mapeo EXACTO por nombre, no por palabra clave — si en algún
+ * momento el equipo agrega o renombra una etapa en GHL, esa etapa nueva
+ * cae a "Sin clasificar" (gris) hasta que se agregue aquí a propósito, en
+ * vez de adivinar mal por keyword.
+ */
+const VTOWER_MARKETING_STAGE_COLOR: Record<string, 'Rojo' | 'Amarillo' | 'Verde'> = {
+  brokers: 'Amarillo', // leads canalizados a agentes/brokers externos — confirmado con el equipo
+  descarte: 'Rojo',
+  'nuevo lead': 'Amarillo',
+  'intento de contacto': 'Amarillo', // se intentó pero no se confirma contacto — confirmado con el equipo
+  contactado: 'Verde',
+  calificado: 'Verde',
+  'cita agendada': 'Verde',
+  'cita realizada': 'Verde',
+  negociación: 'Verde',
+  negociacion: 'Verde', // por si en algún punto se guarda/exporta sin acento
+  apartado: 'Verde',
+  'venta cerrada': 'Verde',
+};
+
+/** Clasifica una etapa del "Marketing Pipeline" de vtower por su nombre EXACTO (ver tabla de arriba). */
+function classifyVtowerMarketingStage(stageName: string): 'Rojo' | 'Amarillo' | 'Verde' | null {
+  const key = stageName.trim().toLowerCase();
+  return VTOWER_MARKETING_STAGE_COLOR[key] ?? null;
+}
+
+/**
+ * Punto único de verdad para el semáforo de un lead. Orden de prioridad:
+ *  1. Nombre exacto de etapa del "Marketing Pipeline" de vtower (más
+ *     confiable — es el mapa que el equipo confirmó a mano).
+ *  2. Número inicial de la etapa GHL (convención de Live, "10 - Registro"
+ *     — vtower no la usa hoy, pero se deja como red de seguridad genérica
+ *     por si algún día aplica).
+ *  3. Palabra clave sobre la Etapa de HubSpot/Sheet (fallback histórico de
+ *     Live, tampoco debería activarse en vtower hoy).
  */
 export function getSemaforoColor(lead: ProcessedLead): 'Rojo' | 'Amarillo' | 'Verde' | null {
   if (lead.estadoGHL) {
+    const fromVtowerStage = classifyVtowerMarketingStage(lead.estadoGHL);
+    if (fromVtowerStage) return fromVtowerStage;
+
     const fromGhl = classifyGhlStageNumber(lead.estadoGHL);
     if (fromGhl) return fromGhl;
   }
