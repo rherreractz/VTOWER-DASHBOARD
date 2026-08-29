@@ -32,7 +32,7 @@ export async function exportLeadsToPdf(leads: ProcessedLead[], options: ExportOp
   function drawHeader(subtitle?: string) {
     doc.setFontSize(16);
     doc.setTextColor(20, 20, 20);
-    doc.text('Live Desarrollos — Reporte de Leads', 40, 40);
+    doc.text('V Tower — Reporte de Leads', 40, 40);
 
     doc.setFontSize(10);
     doc.setTextColor(90, 90, 90);

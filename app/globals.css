@@ -133,7 +133,7 @@
    panel (los colores default de la librería están pensados para fondo
    claro). */
 .react-grid-item.react-grid-placeholder {
-  background: #eff767;
+  background: #2B526B;
   opacity: 0.15;
   border-radius: 0.75rem;
 }

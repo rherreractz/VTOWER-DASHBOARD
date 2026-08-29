@@ -2,7 +2,7 @@ export default function PrivacidadPage() {
   return (
     <div className="mx-auto max-w-2xl px-6 py-16 text-zinc-100">
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">Política de Privacidad</h1>
-      <p className="mb-8 text-sm text-zinc-500">Live Desarrollos — Última actualización: {new Date().toLocaleDateString('es-MX')}</p>
+      <p className="mb-8 text-sm text-zinc-500">V Tower — Última actualización: {new Date().toLocaleDateString('es-MX')}</p>
 
       <div className="flex flex-col gap-6 text-sm leading-relaxed text-zinc-300">
         <section>
@@ -40,7 +40,7 @@ export default function PrivacidadPage() {
 
         <section>
           <h2 className="mb-2 text-base font-semibold text-zinc-100">5. Contacto</h2>
-          <p>Para preguntas sobre esta política, contáctanos a través de nuestros canales oficiales de Live Desarrollos.</p>
+          <p>Para preguntas sobre esta política, contáctanos a través de nuestros canales oficiales de V Tower.</p>
         </section>
       </div>
     </div>

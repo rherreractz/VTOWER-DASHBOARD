@@ -188,7 +188,7 @@ export function LeadsTable({ leads }: { leads: ProcessedLead[] }) {
                       Duplicado
                     </Badge>
                   ) : isToday(lead.parsedDate) ? (
-                    <Badge className="border-transparent bg-[#EFF767] text-zinc-950 hover:bg-[#EFF767]">
+                    <Badge className="border-transparent bg-[#2B526B] text-zinc-950 hover:bg-[#2B526B]">
                       Nuevo
                     </Badge>
                   ) : (

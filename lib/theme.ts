@@ -1,7 +1,7 @@
 // Paleta sobria en modo oscuro + un único acento corporativo.
 // Colores explícitos (no variables de tema) para que el dashboard se vea
 // igual sin importar la configuración de dark/light mode del resto del proyecto.
-export const ACCENT = '#EFF767'; // acento corporativo personalizado
+export const ACCENT = '#2B526B'; // acento corporativo personalizado
 
 export const GRAYS = {
   950: '#09090B', // fondo de página

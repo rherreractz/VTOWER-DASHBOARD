@@ -40,7 +40,7 @@ function LoginForm() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-950 px-4 text-zinc-100">
       <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900 p-6">
-        <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Live Desarrollos</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">V Tower</p>
         <h1 className="mb-6 text-xl font-semibold tracking-tight text-zinc-50">Panel de Reportes</h1>
 
         <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-zinc-500">Contraseña</label>
@@ -57,7 +57,7 @@ function LoginForm() {
         <Button
           type="submit"
           disabled={loading || !password}
-          className="w-full bg-[#EFF767] text-zinc-950 hover:bg-[#EFF767]/90"
+          className="w-full bg-[#2B526B] text-zinc-950 hover:bg-[#2B526B]/90"
         >
           {loading ? 'Entrando…' : 'Entrar'}
         </Button>

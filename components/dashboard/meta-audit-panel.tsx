@@ -185,7 +185,7 @@ export function MetaAuditPanel() {
         <Button
           onClick={runAudit}
           disabled={loading || !effectiveAccountId}
-          className="h-9 bg-[#EFF767] px-4 text-zinc-950 hover:bg-[#EFF767]/90"
+          className="h-9 bg-[#2B526B] px-4 text-zinc-950 hover:bg-[#2B526B]/90"
         >
           {loading ? 'Auditando… (puede tardar ~30-60s)' : 'Correr auditoría de Meta Ads'}
         </Button>

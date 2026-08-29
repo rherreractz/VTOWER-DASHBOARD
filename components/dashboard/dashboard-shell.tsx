@@ -463,7 +463,7 @@ export function DashboardShell({
               onClick={() => setChartEditMode((v) => !v)}
               className={`h-7 gap-1.5 text-xs ${
                 chartEditMode
-                  ? 'bg-[#EFF767] text-zinc-950 hover:bg-[#EFF767]/90'
+                  ? 'bg-[#2B526B] text-zinc-950 hover:bg-[#2B526B]/90'
                   : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
               }`}
             >

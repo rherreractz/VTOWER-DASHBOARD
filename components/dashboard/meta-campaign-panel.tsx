@@ -348,7 +348,7 @@ export function MetaCampaignPanel() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={4}
-              placeholder="Ej. Quiero generar leads para el desarrollo Live Neo en Cancún, departamentos desde $2.5 MDP, dirigido a inversionistas de 30-55 años interesados en bienes raíces en el Caribe mexicano, con $400 pesos al día de presupuesto."
+              placeholder="Ej. Quiero generar leads para el desarrollo en Cancún, departamentos desde $2.5 MDP, dirigido a inversionistas de 30-55 años interesados en bienes raíces en el Caribe mexicano, con $400 pesos al día de presupuesto."
               className={inputClass}
             />
             <p className="mt-1 text-xs text-zinc-600">
@@ -488,7 +488,7 @@ export function MetaCampaignPanel() {
         <Button
           onClick={handleGenerateFull}
           disabled={loading || autoLoading || !canSubmit || !pageId.trim() || !destinationLink.trim()}
-          className="h-9 bg-[#EFF767] px-4 text-zinc-950 hover:bg-[#EFF767]/90"
+          className="h-9 bg-[#2B526B] px-4 text-zinc-950 hover:bg-[#2B526B]/90"
         >
           {loading || autoLoading
             ? autoLoading
@@ -525,7 +525,7 @@ export function MetaCampaignPanel() {
               href={result.created.adsManagerUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-3 inline-block text-sm text-[#EFF767] hover:underline"
+              className="mt-3 inline-block text-sm text-[#2B526B] hover:underline"
             >
               Abrir en Ads Manager →
             </a>
@@ -584,7 +584,7 @@ export function MetaCampaignPanel() {
             <Button
               onClick={handleAutoCreateAds}
               disabled={autoLoading}
-              className="h-9 bg-[#EFF767] px-4 text-zinc-950 hover:bg-[#EFF767]/90"
+              className="h-9 bg-[#2B526B] px-4 text-zinc-950 hover:bg-[#2B526B]/90"
             >
               {autoLoading ? 'Eligiendo imágenes y creando anuncios…' : 'Crear los 3 anuncios automáticamente'}
             </Button>
@@ -601,7 +601,7 @@ export function MetaCampaignPanel() {
                         <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
                           Creado con {item.imageName}
                         </Badge>
-                        <a href={item.adsManagerUrl} target="_blank" rel="noopener noreferrer" className="text-[#EFF767] hover:underline">
+                        <a href={item.adsManagerUrl} target="_blank" rel="noopener noreferrer" className="text-[#2B526B] hover:underline">
                           Ver →
                         </a>
                       </>
@@ -671,7 +671,7 @@ export function MetaCampaignPanel() {
                         <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
                           Anuncio creado — PAUSADO
                         </Badge>
-                        <a href={adState.result.adsManagerUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-[#EFF767] hover:underline">
+                        <a href={adState.result.adsManagerUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-[#2B526B] hover:underline">
                           Ver en Ads Manager →
                         </a>
                       </div>
