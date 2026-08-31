@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createPausedAdWithImage, createPausedAdWithVideo } from '@/lib/metaCreative';
 import { findLeadFormByName } from '@/lib/metaLeadForms';
 
-export const maxDuration = 60;
+// 120s: subir videos a Meta por partes + esperar a que los procese puede
+// pasarse de 60s con archivos pesados.
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
@@ -65,6 +67,9 @@ export async function POST(req: NextRequest) {
           ctaText,
           adName,
           leadFormId,
+          // Con maxDuration=120 en el route hay margen para esperar más a
+          // que Meta procese el video antes de rendirse.
+          maxWaitMs: 95000,
         })
       : await createPausedAdWithImage({
           accountId,

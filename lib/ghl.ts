@@ -272,7 +272,7 @@ async function getGhlDataUncached(): Promise<GhlDataSnapshot> {
  * misma instancia entre requests seguidos) — en un cold start se vuelve a
  * llenar solo, sin que haya que hacer nada manualmente.
  */
-const GHL_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+const GHL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos — alineado con el auto-refresco del panel
 
 let ghlCache: { data: GhlDataSnapshot; fetchedAt: number } | null = null;
 let ghlCacheInFlight: Promise<GhlDataSnapshot> | null = null;

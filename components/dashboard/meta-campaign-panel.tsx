@@ -21,6 +21,43 @@ function getNamedAccounts(): NamedAccount[] {
   return [];
 }
 
+/**
+ * Lee la respuesta de una ruta del API tolerando que NO sea JSON. Pasa
+ * cuando la sesión expiró (el middleware redirige a /login y llega HTML),
+ * cuando el bundle del navegador quedó viejo tras un deploy, o cuando la
+ * función serverless se cae sin cuerpo. En esos casos `res.json()` tira
+ * "Unexpected end of JSON input" y se pierde qué pasó de verdad.
+ */
+async function readJsonOrThrow(res: Response): Promise<any> {
+  const raw = await res.text();
+
+  let json: any = null;
+  if (raw.trim()) {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      // no era JSON
+    }
+  }
+
+  if (json === null) {
+    if (res.redirected && /\/login/.test(res.url)) {
+      throw new Error('Tu sesión expiró. Recarga la página e inicia sesión de nuevo.');
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('Tu sesión expiró o no tienes permiso. Recarga la página e inicia sesión de nuevo.');
+    }
+    const snippet = raw.trim().slice(0, 200);
+    throw new Error(
+      snippet
+        ? `El servidor respondió algo que no es JSON (HTTP ${res.status}). ¿Se actualizó el sitio? Recarga la página (Ctrl+Shift+R). Detalle: ${snippet}`
+        : `El servidor respondió vacío (HTTP ${res.status}). Recarga la página (Ctrl+Shift+R) y vuelve a intentar.`,
+    );
+  }
+
+  return json;
+}
+
 const OBJECTIVES: { value: string; label: string }[] = [
   { value: 'leads', label: 'Generación de leads' },
   { value: 'ventas', label: 'Ventas' },
@@ -106,7 +143,7 @@ export function MetaCampaignPanel() {
     setLoadingForms(true);
     try {
       const res = await fetch(`/api/meta-campaign/lead-forms?pageId=${encodeURIComponent(pageId.trim())}`);
-      const json = await res.json();
+      const json = await readJsonOrThrow(res);
       if (!res.ok) throw new Error(json.error || 'No se pudieron cargar los formularios.');
       setLeadForms(json.forms ?? []);
       // Si alguno coincide con el nombre que tenías escrito, lo preselecciona.
@@ -158,7 +195,7 @@ export function MetaCampaignPanel() {
       }
 
       const res = await fetch('/api/meta-campaign/create-ad', { method: 'POST', body: form });
-      const json = await res.json();
+      const json = await readJsonOrThrow(res);
       if (!res.ok) throw new Error(json.error || 'Ocurrió un error al crear el anuncio.');
 
       setAdState(index, { loading: false, result: { adId: json.adId, adsManagerUrl: json.adsManagerUrl } });
@@ -197,7 +234,7 @@ export function MetaCampaignPanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const json = await res.json();
+    const json = await readJsonOrThrow(res);
     if (!res.ok) {
       throw new Error(json.error || 'Ocurrió un error al generar la campaña.');
     }
@@ -267,7 +304,7 @@ export function MetaCampaignPanel() {
         campaignContext: mode === 'prompt' ? prompt : `${businessDescription}\n\nPúblico: ${targetDescription}`,
       }),
     });
-    const json = await res.json();
+    const json = await readJsonOrThrow(res);
     if (!res.ok) throw new Error(json.error || 'Ocurrió un error al crear los anuncios automáticamente.');
     return json.summary as Array<{ ok: boolean; variantIndex: number; imageName?: string; adId?: string; adsManagerUrl?: string; error?: string }>;
   }
@@ -352,7 +389,7 @@ export function MetaCampaignPanel() {
               className={inputClass}
             />
             <p className="mt-1 text-xs text-zinc-600">
-              Si no mencionas presupuesto u objetivo, Claude los infiere y te dice qué asumió en "Por qué esta estrategia".
+              Si no mencionas presupuesto u objetivo, Claude los infiere y te dice qué asumió en &ldquo;Por qué esta estrategia&rdquo;.
             </p>
           </div>
         ) : (

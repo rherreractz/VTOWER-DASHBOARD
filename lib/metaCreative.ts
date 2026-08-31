@@ -60,23 +60,65 @@ function isGraphError(value: unknown): value is GraphError {
   return !!value && typeof value === 'object' && '_error' in (value as object);
 }
 
+/**
+ * Meta a veces responde con cuerpo VACÍO o con HTML/texto plano (errores de
+ * su edge, límites de tamaño, multipart mal parseado por un filename con
+ * caracteres raros, etc.). Hacer `res.json()` directo en esos casos tira
+ * "Unexpected end of JSON input" y se pierde el status y el cuerpo reales.
+ * Esto lee el texto una sola vez y lo intenta parsear; si no es JSON,
+ * devuelve un _error con el status y un fragmento del cuerpo crudo para
+ * poder diagnosticar qué pasó de verdad.
+ */
+async function readGraphResponse(res: Response, path: string): Promise<any> {
+  const raw = await res.text();
+
+  let data: any = null;
+  if (raw.trim()) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      // no era JSON
+    }
+  }
+
+  if (res.ok && data !== null) return data;
+
+  if (res.ok && data === null) {
+    // 2xx pero sin JSON: raro, pero lo tratamos como error para no seguir
+    // con `data.id` undefined más abajo.
+    console.error(`[metaCreative] POST ${path} devolvió 2xx sin JSON. Cuerpo:`, raw.slice(0, 500));
+    return {
+      _error: { status: res.status, message: `Meta respondió ${res.status} con un cuerpo vacío o no-JSON.`, body: raw.slice(0, 500) },
+    } satisfies GraphError;
+  }
+
+  const err = data?.error ?? {};
+  const detailedMessage = [
+    err.error_user_title,
+    err.error_user_msg,
+    err.message,
+    err.error_subcode ? `(subcode ${err.error_subcode})` : null,
+    err.fbtrace_id ? `[trace: ${err.fbtrace_id}]` : null,
+  ]
+    .filter(Boolean)
+    .join(' — ');
+
+  const fallbackMessage = data === null
+    ? `Meta respondió HTTP ${res.status} con un cuerpo vacío o no-JSON: ${raw.slice(0, 300) || '(sin cuerpo)'}`
+    : `HTTP ${res.status}`;
+
+  console.error(`[metaCreative] POST ${path} falló:`, data !== null ? JSON.stringify(data, null, 2) : raw.slice(0, 500));
+  return {
+    _error: { status: res.status, message: detailedMessage || fallbackMessage, body: data ?? raw.slice(0, 500) },
+  } satisfies GraphError;
+}
+
 async function graphPostForm(path: string, form: FormData, token: string, apiVersion: string): Promise<any> {
   const url = `${GRAPH_BASE}/${apiVersion}/${path.replace(/^\//, '')}`;
   form.set('access_token', token);
 
   const res = await fetch(url, { method: 'POST', body: form });
-  const data = await res.json();
-
-  if (!res.ok) {
-    const err = data?.error ?? {};
-    const detailedMessage = [err.error_user_title, err.error_user_msg, err.message, err.error_subcode ? `(subcode ${err.error_subcode})` : null]
-      .filter(Boolean)
-      .join(' — ');
-    console.error(`[metaCreative] POST ${path} falló:`, JSON.stringify(data, null, 2));
-    return { _error: { status: res.status, message: detailedMessage || `HTTP ${res.status}`, body: data } } satisfies GraphError;
-  }
-
-  return data;
+  return readGraphResponse(res, path);
 }
 
 async function graphPostJSON(path: string, params: Record<string, unknown>, token: string, apiVersion: string): Promise<any> {
@@ -88,18 +130,125 @@ async function graphPostJSON(path: string, params: Record<string, unknown>, toke
   body.set('access_token', token);
 
   const res = await fetch(url, { method: 'POST', body });
-  const data = await res.json();
+  return readGraphResponse(res, path);
+}
 
-  if (!res.ok) {
-    const err = data?.error ?? {};
-    const detailedMessage = [err.error_user_title, err.error_user_msg, err.message, err.error_subcode ? `(subcode ${err.error_subcode})` : null]
-      .filter(Boolean)
-      .join(' — ');
-    console.error(`[metaCreative] POST ${path} falló:`, JSON.stringify(data, null, 2));
-    return { _error: { status: res.status, message: detailedMessage || `HTTP ${res.status}`, body: data } } satisfies GraphError;
+/**
+ * Meta parsea mal el multipart cuando el `filename` de la parte trae bytes
+ * no-ASCII (acentos, ñ, emojis) — en muchos casos responde con un cuerpo
+ * vacío. Los archivos de Drive suelen nombrarse con el desarrollo ("Señorío",
+ * "Olivia SQ", etc.), así que normalizamos: quitamos acentos, dejamos solo
+ * ASCII seguro y conservamos la extensión.
+ */
+function asciiFilename(name: string, fallbackExt: string): string {
+  // NFKD separa "é" en "e" + acento combinante; luego quitamos todo lo que
+  // no sea ASCII imprimible (el acento, la ñ, emojis…) y dejamos solo
+  // caracteres seguros para un header de multipart.
+  const normalized = name
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/[^\w.\- ]+/g, '_')
+    .trim();
+  const safe = normalized || `upload${fallbackExt}`;
+  return /\.[a-z0-9]{2,4}$/i.test(safe) ? safe : `${safe}${fallbackExt}`;
+}
+
+/**
+ * Sube un video a Meta usando el protocolo RESUMABLE (por partes):
+ * `upload_phase=start` → varios `transfer` (Meta dicta el tamaño de cada
+ * chunk con el end_offset que devuelve) → `finish`.
+ *
+ * La subida en un solo request (`source=<archivo entero>`) hace que el
+ * edge de Meta devuelva HTTP 413 ("Payload Too Large", cuerpo vacío) en
+ * cuanto el video pesa un poco. El protocolo por partes no tiene ese tope.
+ *
+ * Devuelve el video_id ya subido (todavía puede estar procesándose del
+ * lado de Meta — eso se espera con el polling de status aparte).
+ */
+async function uploadVideoResumable(opts: {
+  accountId: string;
+  token: string;
+  apiVersion: string;
+  buffer: Buffer;
+  filename: string;
+  mimeType: string;
+}): Promise<string> {
+  const { accountId, token, apiVersion } = opts;
+  const path = `${accountId}/advideos`;
+  const fileName = asciiFilename(opts.filename, '.mp4');
+  const mimeType = opts.mimeType || 'video/mp4';
+  const fileSize = opts.buffer.byteLength;
+
+  if (fileSize === 0) {
+    throw new Error('El archivo de video está vacío (0 bytes).');
   }
 
-  return data;
+  // --- start ---
+  const startForm = new FormData();
+  startForm.set('upload_phase', 'start');
+  startForm.set('file_size', String(fileSize));
+  const startRes = await graphPostForm(path, startForm, token, apiVersion);
+  if (isGraphError(startRes)) {
+    throw new Error(`No se pudo iniciar la subida del video a Meta: ${startRes._error.message}`);
+  }
+
+  const uploadSessionId: string | undefined = startRes.upload_session_id;
+  const videoId: string | undefined = startRes.video_id;
+  if (!uploadSessionId || !videoId) {
+    throw new Error('Meta no devolvió upload_session_id / video_id al iniciar la subida del video.');
+  }
+
+  // Meta dice cuánto quiere en cada chunk con end_offset, pero a veces
+  // devuelve una ventana enorme; el protocolo permite mandar MENOS y Meta
+  // responde con el siguiente offset. Capamos a 8 MB por request para no
+  // volver a chocar con el 413 por tamaño.
+  const MAX_CHUNK = 8 * 1024 * 1024;
+
+  let startOffset = Number(startRes.start_offset);
+  let endOffset = Number(startRes.end_offset);
+
+  // --- transfer (chunks) ---
+  let guard = 0;
+  while (startOffset < endOffset) {
+    if (++guard > 100000) {
+      throw new Error('Demasiados chunks al subir el video — se abortó por seguridad.');
+    }
+
+    const chunkEnd = Math.min(endOffset, startOffset + MAX_CHUNK);
+    const chunk = new Uint8Array(opts.buffer.subarray(startOffset, chunkEnd));
+
+    let transferRes: any;
+    let attempt = 0;
+    while (true) {
+      const transferForm = new FormData();
+      transferForm.set('upload_phase', 'transfer');
+      transferForm.set('upload_session_id', uploadSessionId);
+      transferForm.set('start_offset', String(startOffset));
+      transferForm.set('video_file_chunk', new Blob([chunk], { type: mimeType }), fileName);
+
+      transferRes = await graphPostForm(path, transferForm, token, apiVersion);
+      if (!isGraphError(transferRes)) break;
+
+      if (++attempt >= 3) {
+        throw new Error(`Falló la transferencia del video a Meta (offset ${startOffset}): ${transferRes._error.message}`);
+      }
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+
+    startOffset = Number(transferRes.start_offset);
+    endOffset = Number(transferRes.end_offset);
+  }
+
+  // --- finish ---
+  const finishForm = new FormData();
+  finishForm.set('upload_phase', 'finish');
+  finishForm.set('upload_session_id', uploadSessionId);
+  const finishRes = await graphPostForm(path, finishForm, token, apiVersion);
+  if (isGraphError(finishRes)) {
+    throw new Error(`Meta no pudo finalizar la subida del video: ${finishRes._error.message}`);
+  }
+
+  return videoId;
 }
 
 export type ImageSource =
@@ -162,8 +311,8 @@ export async function createPausedAdWithImage(input: CreateAdInput): Promise<Cre
   if (input.image.kind === 'file') {
     imageForm.set('source', input.image.file, input.image.file.name);
   } else {
-    const blob = new Blob([bufferToArrayBuffer(input.image.buffer)], { type: input.image.mimeType });
-    imageForm.set('source', blob, input.image.filename);
+    const blob = new Blob([bufferToArrayBuffer(input.image.buffer)], { type: input.image.mimeType || 'image/jpeg' });
+    imageForm.set('source', blob, asciiFilename(input.image.filename, '.jpg'));
   }
 
   const uploadResult = await graphPostForm(`${input.accountId}/adimages`, imageForm, input.token, apiVersion);
@@ -261,24 +410,29 @@ export async function createPausedAdWithVideo(input: CreateVideoAdInput): Promis
   const apiVersion = process.env.META_API_VERSION || 'v22.0';
   const maxWaitMs = input.maxWaitMs ?? 45000;
 
-  // 1. Subir el video.
-  const videoForm = new FormData();
+  // 1. Subir el video con el protocolo resumable (por partes) — la subida
+  //    en un solo request revienta con HTTP 413 en cuanto el video pesa.
+  let videoBuffer: Buffer;
+  let videoFilename: string;
+  let videoMime: string;
   if (input.video.kind === 'file') {
-    videoForm.set('source', input.video.file, input.video.file.name);
+    videoBuffer = Buffer.from(await input.video.file.arrayBuffer());
+    videoFilename = input.video.file.name || 'video.mp4';
+    videoMime = input.video.file.type || 'video/mp4';
   } else {
-    const blob = new Blob([bufferToArrayBuffer(input.video.buffer)], { type: input.video.mimeType });
-    videoForm.set('source', blob, input.video.filename);
+    videoBuffer = input.video.buffer;
+    videoFilename = input.video.filename;
+    videoMime = input.video.mimeType || 'video/mp4';
   }
 
-  const uploadResult = await graphPostForm(`${input.accountId}/advideos`, videoForm, input.token, apiVersion);
-  if (isGraphError(uploadResult)) {
-    throw new Error(`No se pudo subir el video a Meta: ${uploadResult._error.message}`);
-  }
-
-  const videoId: string | undefined = uploadResult.id;
-  if (!videoId) {
-    throw new Error('Meta no devolvió un ID de video tras la subida.');
-  }
+  const videoId = await uploadVideoResumable({
+    accountId: input.accountId,
+    token: input.token,
+    apiVersion,
+    buffer: videoBuffer,
+    filename: videoFilename,
+    mimeType: videoMime,
+  });
 
   // 2. Esperar a que termine de procesar (polling).
   const start = Date.now();
@@ -288,7 +442,15 @@ export async function createPausedAdWithVideo(input: CreateVideoAdInput): Promis
   while (Date.now() - start < maxWaitMs) {
     const statusUrl = `${GRAPH_BASE}/${apiVersion}/${videoId}?fields=status,thumbnails&access_token=${input.token}`;
     const res = await fetch(statusUrl);
-    const data = await res.json();
+    const rawStatus = await res.text();
+    let data: any = null;
+    try {
+      data = rawStatus.trim() ? JSON.parse(rawStatus) : null;
+    } catch {
+      // respuesta no-JSON de Meta durante el polling: la ignoramos y
+      // reintentamos en la siguiente vuelta en vez de tumbar el flujo.
+      console.error('[metaCreative] status del video devolvió no-JSON:', rawStatus.slice(0, 300));
+    }
 
     const videoStatus = data?.status?.video_status;
     if (videoStatus === 'ready') {

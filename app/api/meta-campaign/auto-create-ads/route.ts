@@ -5,7 +5,9 @@ import { createPausedAdWithImage, createPausedAdWithVideo } from '@/lib/metaCrea
 import { findLeadFormByName } from '@/lib/metaLeadForms';
 import type { AdCopyVariant } from '@/lib/metaCampaignGenerator';
 
-export const maxDuration = 60;
+// 120s: subir videos a Meta por partes + esperar a que los procese puede
+// pasarse de 60s con archivos pesados.
+export const maxDuration = 120;
 
 interface AutoCreateAdsBody {
   accountId: string;
@@ -85,7 +87,9 @@ export async function POST(req: NextRequest) {
                 ctaText: variant.cta,
                 adName: `${campaignName} — Variante ${index + 1}`,
                 leadFormId,
-                maxWaitMs: 30000,
+                // Con maxDuration=120 en el route hay margen para esperar
+                // más a que Meta procese el video antes de rendirse.
+                maxWaitMs: 75000,
               })
             : await createPausedAdWithImage({
                 accountId,

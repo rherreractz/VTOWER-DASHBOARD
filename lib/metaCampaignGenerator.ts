@@ -61,8 +61,8 @@ export interface CampaignBrief {
 const AD_COPY_VARIANT_SCHEMA = {
   type: 'object',
   properties: {
-    headline: { type: 'string', description: 'Máximo 40 caracteres' },
-    primaryText: { type: 'string', description: 'Máximo 125 palabras' },
+    headline: { type: 'string', description: 'Máximo 40 caracteres. Puede llevar 1 emoji de apertura si encaja con el gancho.' },
+    primaryText: { type: 'string', description: 'Máximo 125 palabras. Usa emojis como bullet points para precios/características/pasos, y uno de cierre junto al llamado a la acción — ver guía de estilo de emojis del prompt del sistema.' },
     description: { type: 'string', description: 'Máximo 30 caracteres' },
     cta: { type: 'string', description: "Texto de botón en español, ej. 'Más información'" },
   },
@@ -178,6 +178,8 @@ Si te dan contexto adicional de la cuenta, viene en dos partes distintas, úsala
 2. Calidad real de los leads (histórica, medida por si de verdad avanzaron o se descartaron — no solo cuántos se registraron): si algún canal o campaña anterior muestra baja calidad (% bajo de leads que avanzaron), considera ajustar el ángulo del copy o el targeting para no repetir el mismo patrón; si alguno muestra alta calidad, puedes tomarlo como referencia de qué está funcionando. Menciona en strategyNotes qué de esta calidad histórica tomaste en cuenta, si aplica.
 
 Sobre segmentación detallada (ciudades e intereses): si el usuario menciona ciudades o intereses específicos en su instrucción, respétalos exactamente en suggestedCities/suggestedInterestKeywords — esto tiene prioridad sobre cualquier otro criterio. Si no los menciona pero el negocio tiene una ubicación/interés obvio (ej. un desarrollo inmobiliario en una ciudad específica), sugiere algo razonable de todas formas — no dejes esto vacío solo por default, la segmentación amplia sin ningún detalle es la excepción, no la regla.
+
+Sobre emojis en el copy (headline y primaryText): úsalos, es el estándar en anuncios de bienes raíces/inmobiliaria en Meta para LATAM — dan escaneabilidad y llaman la atención en el feed. Un emoji de apertura relacionado al gancho principal (🎯🌊🏡✨), emojis de bullet point en vez de guiones para listar características/precios/facilidades de pago (🌊 📐 💰 📅 🏷️), y algo de cierre con llamado a la acción (📲 👉). No abuses (2-4 por bloque de texto es suficiente, no lo satures), y que tengan sentido con el contenido real, no decorativos al azar. Si el usuario te dio un copy base con emojis, sigue exactamente ese mismo estilo/densidad.
 
 Llama a la herramienta "${TOOL_NAME}" con el brief completo. Responde SIEMPRE llamando a esa herramienta, nunca con texto plano.`;
 

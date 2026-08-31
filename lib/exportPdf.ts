@@ -126,6 +126,6 @@ export async function exportLeadsToPdf(leads: ProcessedLead[], options: ExportOp
     doc.deletePage(1);
   }
 
-  const filename = `live-desarrollos-leads-${new Date().toISOString().slice(0, 10)}.pdf`;
+  const filename = `vtower-leads-${new Date().toISOString().slice(0, 10)}.pdf`;
   doc.save(filename);
 }

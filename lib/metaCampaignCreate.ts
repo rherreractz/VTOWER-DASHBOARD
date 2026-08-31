@@ -50,9 +50,22 @@ async function graphPost(path: string, params: Record<string, unknown>, token: s
   body.set('access_token', token);
 
   const res = await fetch(url, { method: 'POST', body });
-  const data = await res.json();
 
-  if (!res.ok) {
+  // Meta puede responder con cuerpo vacío / HTML / texto plano (errores de
+  // su edge, rate limit, etc.). `res.json()` directo tira "Unexpected end of
+  // JSON input" y se pierde el status real, así que leemos texto y parseamos
+  // con cuidado.
+  const raw = await res.text();
+  let data: any = null;
+  if (raw.trim()) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      // no era JSON
+    }
+  }
+
+  if (!res.ok || data === null) {
     const err = data?.error ?? {};
     const detailedMessage = [
       err.error_user_title,
@@ -64,11 +77,15 @@ async function graphPost(path: string, params: Record<string, unknown>, token: s
       .filter(Boolean)
       .join(' — ');
 
+    const fallbackMessage = data === null
+      ? `Meta respondió HTTP ${res.status} con un cuerpo vacío o no-JSON: ${raw.slice(0, 300) || '(sin cuerpo)'}`
+      : `HTTP ${res.status}`;
+
     console.error(`[metaCampaignCreate] POST ${path} falló. Params enviados:`, params);
-    console.error(`[metaCampaignCreate] Respuesta completa de Meta:`, JSON.stringify(data, null, 2));
+    console.error(`[metaCampaignCreate] Respuesta de Meta:`, data !== null ? JSON.stringify(data, null, 2) : raw.slice(0, 500));
 
     return {
-      _error: { status: res.status, message: detailedMessage || `HTTP ${res.status}`, body: data },
+      _error: { status: res.status, message: detailedMessage || fallbackMessage, body: data ?? raw.slice(0, 500) },
     } satisfies GraphError;
   }
 

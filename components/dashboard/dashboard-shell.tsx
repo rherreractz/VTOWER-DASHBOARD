@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, LayoutGrid, RotateCcw, GripVertical } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import { Download, LayoutGrid, RotateCcw, GripVertical, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -80,6 +81,27 @@ export function DashboardShell({
 }) {
   const [filters, setFilters] = useState<LeadFilters>(DEFAULT_LEAD_FILTERS);
   const [isExporting, setIsExporting] = useState(false);
+
+  // Refresco de datos: vuelve a ejecutar el Server Component (nuevos leads
+  // desde GoHighLevel) sin recargar la página ni perder los filtros que el
+  // usuario tenga puestos. router.refresh() dentro de una transición
+  // mantiene isRefreshing en true hasta que llegan los datos nuevos.
+  const router = useRouter();
+  const [isRefreshing, startRefresh] = useTransition();
+
+  function handleRefresh() {
+    startRefresh(() => {
+      router.refresh();
+    });
+  }
+
+  // Auto-refresco cada 5 minutos.
+  useEffect(() => {
+    const id = setInterval(() => {
+      router.refresh();
+    }, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [router]);
 
   // Refs a cada gráfica, para capturarlas como imagen al exportar el PDF
   // (html-to-image lee el DOM ya renderizado — no se recalculan datos ni
@@ -434,16 +456,28 @@ export function DashboardShell({
         >
           <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 p-4 pb-2">
             <CardTitle className="text-base font-medium text-zinc-50">Leads</CardTitle>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={isExporting || sortedLeads.length === 0}
-              onClick={handleExportPdf}
-              className="h-8 gap-1.5 border-zinc-800 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
-            >
-              <Download className="h-3.5 w-3.5" />
-              {isExporting ? 'Generando…' : 'Exportar PDF'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isRefreshing}
+                onClick={handleRefresh}
+                className="h-8 gap-1.5 border-zinc-800 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                {isRefreshing ? 'Actualizando…' : 'Refrescar'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isExporting || sortedLeads.length === 0}
+                onClick={handleExportPdf}
+                className="h-8 gap-1.5 border-zinc-800 bg-zinc-900 text-xs text-zinc-200 hover:bg-zinc-800"
+              >
+                <Download className="h-3.5 w-3.5" />
+                {isExporting ? 'Generando…' : 'Exportar PDF'}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="min-h-0 flex-1 p-0">
             <LeadsTable leads={sortedLeads} />
